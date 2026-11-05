@@ -748,6 +748,34 @@ const IDB={
 function b64(s){const bin=atob(s),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u}
 
 const PL={url:null,name:'',pages:0,page:1,doc:null,loading:false,err:'',demo:false,tried:false};
+/* scherpe uitsnede van het PDF-plan bij diep inzoomen */
+let DET=null,detT=0,detJob=0;
+function detClear(){if(DET&&DET.url)try{URL.revokeObjectURL(DET.url)}catch(e){}DET=null}
+function imgBox(){const pa=PL.vpH/PL.vpW;if(pa<H/W){const h=W*pa;return{x:0,y:(H-h)/2,w:W,h}}const w=H/pa;return{x:(W-w)/2,y:0,w,h:H}}
+function minVbW(){const [sw]=svgWH();return S.bg==='plan'&&PL.url?sw/60:sw/4}
+function scheduleDet(){clearTimeout(detT);detT=setTimeout(renderDet,280)}
+async function renderDet(){
+  if(S.bg!=='plan'||!PL.doc||!PL.pg||!PL.url)return;
+  const [sw,sh]=svgWH(),dpr=Math.min(window.devicePixelRatio||1,2),ib=imgBox();
+  const pxPerUnit=sw/vb.w*dpr,basePxPerUnit=PL.vpW*PL.baseSc/ib.w;
+  if(pxPerUnit<=basePxPerUnit*1.15){if(DET){detClear();renderPlan()}return}
+  // zichtbaar gebied (+25% rand) in eenheden, binnen het plan
+  const mx=vb.w*.25,my=vb.h*.25;
+  const x0=Math.max(ib.x,vb.x-mx),y0=Math.max(ib.y,vb.y-my),x1=Math.min(ib.x+ib.w,vb.x+vb.w+mx),y1=Math.min(ib.y+ib.h,vb.y+vb.h+my);
+  if(x1<=x0||y1<=y0)return;
+  if(DET&&DET.ppu>=pxPerUnit*.95&&DET.x<=x0+1e-6&&DET.y<=y0+1e-6&&DET.x+DET.w>=x1-1e-6&&DET.y+DET.h>=y1-1e-6)return;
+  const u2p=PL.vpW/ib.w;let s=pxPerUnit/u2p;               // pdf-schaal
+  let cw=(x1-x0)*u2p*s,ch=(y1-y0)*u2p*s;const cap=12e6;
+  if(cw*ch>cap){const f=Math.sqrt(cap/(cw*ch));s*=f;cw*=f;ch*=f}
+  const job=++detJob,pg=PL.pg;
+  const c=document.createElement('canvas');c.width=Math.max(1,Math.round(cw));c.height=Math.max(1,Math.round(ch));
+  const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
+  const px0=(x0-ib.x)*u2p,py0=(y0-ib.y)*u2p;
+  try{await pg.render({canvasContext:ctx,viewport:pg.getViewport({scale:s,offsetX:-px0*s,offsetY:-py0*s})}).promise}catch(e){return}
+  if(job!==detJob||pg!==PL.pg)return;
+  const blob=await new Promise(r=>c.toBlob(r,'image/png'));if(!blob||job!==detJob)return;
+  detClear();DET={url:URL.createObjectURL(blob),x:x0,y:y0,w:x1-x0,h:y1-y0,ppu:pxPerUnit};renderPlan(true);
+}
 let vb={x:0,y:0,w:W,h:H};
 async function planLoad(){
   if(PL.url||PL.loading||PL.tried)return;PL.tried=true;
@@ -758,7 +786,7 @@ async function planLoad(){
 }
 function setUrl(u){if(PL.url&&PL.url.startsWith('blob:'))try{URL.revokeObjectURL(PL.url)}catch(e){}PL.url=u}
 async function planOpen(bytes,type,name){
-  PL.loading=true;PL.err='';renderPlan();
+  detClear();PL.pg=null;PL.loading=true;PL.err='';renderPlan();
   try{
     if(/pdf/i.test(type||'')){
       if(typeof pdfjsLib==='undefined')throw new Error('de PDF-lezer kon niet geladen worden');
@@ -772,6 +800,7 @@ async function planOpen(bytes,type,name){
 }
 async function planPage(n){
   const pg=await PL.doc.getPage(n);const vp=pg.getViewport({scale:1});const sc=Math.min(4,2800/vp.width);
+  PL.pg=pg;PL.vpW=vp.width;PL.vpH=vp.height;PL.baseSc=sc;detClear();
   const c=document.createElement('canvas');c.width=Math.round(vp.width*sc);c.height=Math.round(vp.height*sc);
   const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
   await pg.render({canvasContext:ctx,viewport:pg.getViewport({scale:sc})}).promise;
@@ -787,7 +816,7 @@ async function planFile(f){
   await planOpen(new Uint8Array(buf),type,f.name);if(!flash)flash='Plan geladen — sleep de punten op hun plaats.';render();
 }
 function clampVb(){clampBox(vb)}
-function zoomAt(f,wx,wy){const [sw,sh]=svgWH(),ar=sh/sw,fw=fitVb().w;const nw=clamp(vb.w*f,sw/4,Math.max(fw,sw)),r=nw/vb.w;vb={x:wx-(wx-vb.x)*r,y:wy-(wy-vb.y)*r,w:nw,h:nw*ar};clampVb();renderPlan()}
+function zoomAt(f,wx,wy){const [sw,sh]=svgWH(),ar=sh/sw,fw=fitVb().w;const nw=clamp(vb.w*f,minVbW(),Math.max(fw,sw)),r=nw/vb.w;vb={x:wx-(wx-vb.x)*r,y:wy-(wy-vb.y)*r,w:nw,h:nw*ar};clampVb();renderPlan()}
 
 /* ---------- helpers ---------- */
 const trI=()=>sel&&sel.kind==='tr'&&S.tr[sel.i]?sel.i:null;
@@ -829,16 +858,17 @@ function renderPlan(){
 `;
   }else{
     h+=`<rect x="${-W}" y="${-H}" width="${W*3}" height="${H*3}" fill="${dark?'#16181A':'#E9E9E6'}"/><rect width="${W}" height="${H}" fill="#FFFFFF"/>`;
-    if(PL.url)h+=`<image href="${PL.url}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet" opacity="${dark?.8:.92}"/>`;
+    if(PL.url)h+=`<image href="${PL.url}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet"/>`;
+    if(PL.url&&DET)h+=`<image href="${DET.url}" x="${DET.x}" y="${DET.y}" width="${DET.w}" height="${DET.h}" preserveAspectRatio="none"/>`;
   }
   h+=`<rect data-hit="bg" x="${-W}" y="${-H}" width="${W*3}" height="${H*3}" fill="transparent"/>`;
   // trajecten
   S.tr.forEach((t,i)=>{
     const [a,b]=t.code.split('-');const p=P[a],q=P[b];if(!p||!q)return;
-    const on=i===ti,th=(on?14:10)*k,dim=ti!==null&&!on;
+    const on=i===ti,onPlan=S.bg==='plan'&&!!PL.url,th=(onPlan?(on?9:7):(on?14:10))*k,dim=ti!==null&&!on;
     const col=t.type==='boring'?'url(#stripes)':(kleur(t.g)||'#8B8E93');
-    if(on)h+=`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="#FF7A00" stroke-width="${th+10*k}" stroke-linecap="round"/><line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${halo}" stroke-width="${th+5*k}" stroke-linecap="round"/>`;
-    h+=`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${col}" stroke-width="${th}" stroke-linecap="round" opacity="${dim?.5:1}"/>`;
+    if(on)h+=onPlan?`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="#FF7A00" stroke-width="${th+8*k}" stroke-linecap="round" opacity=".35"/>`:`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="#FF7A00" stroke-width="${th+10*k}" stroke-linecap="round"/><line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${halo}" stroke-width="${th+5*k}" stroke-linecap="round"/>`;
+    h+=`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${col}" stroke-width="${th}" stroke-linecap="round" opacity="${onPlan?(on?.55:dim?.25:.4):(dim?.5:1)}"/>`;
     h+=`<line class="hit" data-hit="tr" data-i="${i}" x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="transparent" stroke-width="${24*k}" stroke-linecap="round"><title>${esc(t.code+' · '+t.g+' · '+(t.m?fmt(t.m)+' m':'lengte ontbreekt'))}</title></line>`;
     const dx=q[0]-p[0],dy=q[1]-p[1],L=Math.hypot(dx,dy)||1;
     if(L>=40*k||on){const mx=(p[0]+q[0])/2-dy/L*20*k,my=(p[1]+q[1])/2+dx/L*20*k;
@@ -866,12 +896,13 @@ function renderPlan(){
   }
   if(mode==='koppel'&&pend&&P[pend.to])h+=`<circle cx="${P[pend.to][0]}" cy="${P[pend.to][1]}" r="${26*k}" fill="none" stroke="#FF7A00" stroke-width="${3*k}" pointer-events="none"/>`;
   svg.innerHTML=h;
+  if(!arguments[0])scheduleDet();
   svg.classList.toggle('crosshair',mode==='plaats'||mode==='richting');
   const over=document.getElementById('planover');
   const bt=mode==='koppel'&&pend?`Punt ${pend.from} ligt op ${pend.to} — koppelen?`:mode==='plaats'?`Tik waar ${pend.code} begint`:mode==='richting'?`Tik waar ${pend.code} eindigt`:'';
   if(over)over.innerHTML=`<div class="bgsw"><div class="bgseg"><button type="button" data-bg="schets" aria-pressed="${S.bg==='schets'}">Schets</button><button type="button" data-bg="plan" aria-pressed="${S.bg==='plan'}">Eigen plan</button></div>
     ${S.bg==='plan'&&PL.url?`<label class="plbl">Ander plan<input type="file" accept="application/pdf,.pdf,image/*" data-upload="1"></label>${PL.pages>1?`<span class="plbl" style="cursor:default;padding:0 4px"><button type="button" class="pn" data-page="-1" ${PL.page<=1?'disabled':''} aria-label="Vorige pagina">‹</button><span class="num" style="font-size:12px">p. ${PL.page}/${PL.pages}</span><button type="button" class="pn" data-page="1" ${PL.page>=PL.pages?'disabled':''} aria-label="Volgende pagina">›</button></span>`:''}`:''}</div>
-    <span class="phint">lijn = traject · letter = punt · sleep om te verplaatsen</span>
+    ${S.bg==='plan'?'':`<span class="phint">lijn = traject · letter = punt · sleep om te verplaatsen</span>`}
     ${bt?`<div class="pban">${esc(bt)}</div>`:''}
     ${S.bg==='plan'&&!PL.url?(PL.loading?`<div class="pdrop" style="cursor:default"><b>Plan laden…</b></div>`:`<label class="pdrop">${UPL}<b>Eigen plan opladen</b><span>PDF, foto of afbeelding van het uitvoeringsplan. Sleep daarna de punten op hun plaats.</span>${PL.err?`<span class="er">${esc(PL.err)}</span>`:''}<input type="file" accept="application/pdf,.pdf,image/*" data-upload="1"></label>`):''}`;
   const tm=document.getElementById('totm');if(tm)tm.textContent=fmt2(S.tr.reduce((a,t)=>a+(t.m||0),0));
@@ -1005,7 +1036,8 @@ function renderPanel(){
       ${os.map((o,i)=>`<div class="irow"><span class="q"></span><span class="t"><b>${esc(o.t)}</b></span><button type="button" class="st" data-obj="-1" data-i="${i}" aria-label="Eén minder">−</button><span class="n">${o.n}</span><button type="button" class="st" data-obj="1" data-i="${i}" aria-label="Eén meer">+</button><button type="button" class="st x" data-objx="${i}" aria-label="Object weghalen">×</button></div>`).join('')}
       <span class="cap" style="margin-top:2px">Object toevoegen</span>
       <div class="add2">${S.lijsten.objecttypes.map(x=>{const cu=os.find(o=>o.t===x);return `<button type="button" class="addb big${cu?' has':''}" data-objadd="${esc(x)}"><span class="q"></span><span class="t"><span>${esc(x)}</span><small>${cu?'op punt ×'+cu.n:'+ toevoegen'}</small></span></button>`}).join('')}</div>
-      <label class="flab">Locatie / opmerking<input class="nin" id="pnote" value="${esc(S.notes[L]||'')}" placeholder="bv. thv Steenweg 273"></label></div></div>`;
+      <label class="flab">Locatie / opmerking<input class="nin" id="pnote" value="${esc(S.notes[L]||'')}" placeholder="bv. thv Steenweg 273"></label>
+      ${trs?'':`<button type="button" class="delb${delArm?' armed':''}" style="height:44px;justify-content:center" data-act="delP">${TRASH}${delArm?'Zeker? Tik opnieuw: punt '+esc(L)+(os.length?' en objecten':'')+' weg':'Los punt '+esc(L)+' verwijderen'}</button>`}</div></div>`;
   }else{
     h+=`<div class="pc ot none"><div class="col" style="gap:12px;padding-top:6px"><div class="hintbox"><b>Tik een lijn of een letter</b><span>Een <b>lijn</b> is een traject: bestrating, leidingen en lengte. Een <b>letter</b> is een punt: daar hang je objecten aan (manhole, moffen).</span></div><button type="button" class="bigo" data-act="newT">+ Nieuw traject tekenen</button></div></div>`;
   }
@@ -1140,7 +1172,7 @@ document.addEventListener('pointermove',e=>{
   const svg=document.getElementById('plan');if(!svg)return;
   if(ptrs.has(e.pointerId))ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(gest&&ptrs.size>=2){const [a,b]=[...ptrs.values()];const d=Math.hypot(a.x-b.x,a.y-b.y),r=rectOf();
-    const ar=r.height/r.width,nw=clamp(gest.w0*gest.d0/d,r.width/4,Math.max(fitVb().w,r.width)),mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+    const ar=r.height/r.width,nw=clamp(gest.w0*gest.d0/d,minVbW(),Math.max(fitVb().w,r.width)),mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
     vb={w:nw,h:nw*ar,x:gest.wm[0]-(mx-r.left)/r.width*nw,y:gest.wm[1]-(my-r.top)/r.height*nw*ar};clampVb();renderPlan();return}
   if(drag){
     if(!drag.moved&&Math.hypot(e.clientX-drag.sx,e.clientY-drag.sy)<5)return;
@@ -1191,6 +1223,9 @@ document.addEventListener('click',e=>{
   if(a==='nokoppel'){flash=`${pend.from} en ${pend.to} blijven twee punten`;mode=null;pend=null;save();refresh();return}
   if(a==='terug'){S.pts[pend.from]=[pend.ox,pend.oy];flash=`Punt ${pend.from} teruggezet`;mode=null;pend=null;save();refresh();return}
   if(a==='delT'){delTraject();return}
+  if(a==='delP'){const L=ptL();if(!L||S.tr.some(x=>x.code.split('-').includes(L)))return;
+    if(!delArm){delArm=true;renderPanel();return}
+    delete S.pts[L];delete S.objs[L];delete S.notes[L];sel=null;delArm=false;changed();flash=`Punt ${L} verwijderd.`;refresh();return}
   const T=curT();
   if(T){
     if(t.dataset.maatall){S.tr.forEach(x=>{if(x!==T&&maatMist(x)){x.b=T.b;x.d=T.d}});S.lastMaat={b:T.b,d:T.d};changed();refresh();return}
